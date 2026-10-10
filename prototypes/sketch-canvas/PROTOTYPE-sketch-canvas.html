@@ -1,0 +1,462 @@
+<title>GPTEdit Sketch Canvas</title>
+<!--
+  PROTOTYPE, throwaway. Wayfinder ticket: "Sketch canvas: how the artist draws the sketch" (#5).
+  Three variants of the sketch step, switchable with the bottom bar, the arrow keys, or #A / #B / #C:
+    A  Paint over     RotoPaint-style: one brush, colour = intent, free-text prompt.
+    B  Sketch kit     purpose-built tools: brush, arrow, box, text label; prompt built from the legend.
+    C  Regions        boxes only; each box is a numbered region with its own instruction.
+  Every variant shows exactly what would be sent: image 1 (clean frame), image 2 (sketch over frame),
+  the prompt, and the comp-back mask (dilated, softened sketch coverage), per the decisions on
+  tickets #3 and #4. Nothing is sent anywhere.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a compositor's viewer on the left, a properties panel on the right (stacks below on phones). Single dark look, like the Nuke viewer it stands in for. */
+:root {
+  color-scheme: dark;
+  --bg: #16181b;
+  --panel: #1f2226;
+  --panel-2: #272b30;
+  --line: #353a41;
+  --fg: #d9dde2;
+  --muted: #8c949e;
+  --accent: #f0a13a;          /* Nuke-ish orange, used for selection and focus only */
+  --remove: #ff5a52;
+  --add: #3fd47f;
+  --move: #4aa8ff;
+  --change: #ffd23f;
+  --font-ui: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font-ui); font-size: 14px; }
+.wrap { padding-inline: 16px; padding-block: 12px 88px; max-width: 1440px; margin: 0 auto; display: grid; gap: 12px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; }
+h1 { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: .01em; }
+.sub { color: var(--muted); margin: 0; }
+.tag { font-family: var(--font-mono); font-size: 11px; color: var(--bg); background: var(--accent); padding: 2px 6px; border-radius: 3px; letter-spacing: .04em; }
+main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 12px; align-items: start; }
+@media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
+
+.viewer { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; display: grid; gap: 0; min-width: 0; }
+.vbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px; border-bottom: 1px solid var(--line); }
+.stagewrap { display: flex; min-width: 0; }
+.rail { display: flex; flex-direction: column; gap: 4px; padding: 8px; border-right: 1px solid var(--line); }
+@media (max-width: 600px) { .stagewrap { flex-direction: column; } .rail { flex-direction: row; border-right: 0; border-bottom: 1px solid var(--line); } }
+.stage { position: relative; flex: 1; min-width: 0; background: #0c0d0f; padding: 8px; }
+.stage canvas { display: block; width: 100%; height: auto; touch-action: none; cursor: crosshair; }
+.vfoot { display: flex; justify-content: space-between; gap: 8px; padding: 6px 8px; border-top: 1px solid var(--line); font-family: var(--font-mono); font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+#textInput { position: absolute; font: 600 15px var(--font-ui); background: var(--panel-2); color: var(--fg); border: 1px solid var(--accent); border-radius: 3px; padding: 4px 6px; width: 180px; }
+
+button, .btn { font: 500 13px var(--font-ui); color: var(--fg); background: var(--panel-2); border: 1px solid var(--line); border-radius: 3px; padding: 6px 10px; cursor: pointer; }
+button:hover { border-color: var(--muted); }
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.tool { width: 44px; height: 40px; padding: 0; display: grid; place-items: center; }
+.tool svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; }
+.chip i { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+.spacer { flex: 1; }
+label.sl { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+input[type=range] { width: 90px; accent-color: var(--accent); }
+.file { position: relative; overflow: hidden; }
+.file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+
+aside { display: grid; gap: 12px; min-width: 0; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 12px; display: grid; gap: 10px; min-width: 0; }
+.card h2 { margin: 0; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.card p { margin: 0; color: var(--muted); line-height: 1.45; }
+textarea { width: 100%; box-sizing: border-box; min-height: 64px; resize: vertical; font: 14px/1.4 var(--font-ui); color: var(--fg); background: var(--panel-2); border: 1px solid var(--line); border-radius: 3px; padding: 8px; }
+.thumbs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.thumbs figure { margin: 0; display: grid; gap: 4px; min-width: 0; }
+.thumbs canvas { width: 100%; height: auto; display: block; border: 1px solid var(--line); background: #000; }
+.thumbs figcaption { font-family: var(--font-mono); font-size: 10.5px; color: var(--muted); }
+pre.prompt { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12px/1.5 var(--font-mono); background: var(--panel-2); border: 1px solid var(--line); border-radius: 3px; padding: 8px; max-height: 260px; overflow: auto; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.regions { display: grid; gap: 8px; }
+.region { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 8px; align-items: start; padding: 8px; background: var(--panel-2); border-radius: 3px; border-left: 3px solid var(--c, var(--line)); }
+.region b { font: 600 14px var(--font-mono); }
+.region .f { display: grid; gap: 6px; }
+.region select, .region input { font: 13px var(--font-ui); color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 3px; padding: 5px 6px; width: 100%; box-sizing: border-box; }
+.empty { color: var(--muted); font-style: italic; }
+.note { font-size: 12px; color: var(--muted); }
+.switcher { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(12px + env(safe-area-inset-bottom, 0px)); display: flex; align-items: center; gap: 4px; background: #f3f4f6; color: #111; border-radius: 999px; padding: 4px; box-shadow: 0 6px 24px rgba(0,0,0,.5); z-index: 10; max-width: calc(100% - 32px); }
+.switcher button { background: transparent; color: #111; border: 0; border-radius: 999px; font: 600 14px var(--font-ui); padding: 6px 12px; }
+.switcher button:hover { background: #dfe2e6; }
+.switcher span { font: 600 13px var(--font-ui); padding: 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>GPTEdit Sketch Canvas</h1>
+    <span class="tag">PROTOTYPE</span>
+    <p class="sub" id="variantBlurb"></p>
+  </header>
+
+  <main>
+    <section class="viewer" aria-label="Viewer">
+      <div class="vbar" id="vbar"></div>
+      <div class="stagewrap">
+        <div class="rail" id="rail" hidden></div>
+        <div class="stage" id="stage">
+          <canvas id="cv" aria-label="Frame with sketch. Drag to draw."></canvas>
+          <input id="textInput" type="text" placeholder="Label, then Enter" hidden>
+        </div>
+      </div>
+      <div class="vfoot"><span id="frameInfo"></span><span id="shapeInfo"></span></div>
+    </section>
+
+    <aside>
+      <div class="card" id="controls"></div>
+      <div class="card">
+        <h2>What gets sent</h2>
+        <div class="thumbs">
+          <figure><canvas id="t1"></canvas><figcaption>image_1 · clean frame</figcaption></figure>
+          <figure><canvas id="t2"></canvas><figcaption>image_2 · sketch over frame</figcaption></figure>
+          <figure><canvas id="t3"></canvas><figcaption>comp mask · kept in Nuke</figcaption></figure>
+        </div>
+        <div class="row">
+          <label class="sl" for="grow">Grow <input id="grow" type="range" min="0" max="80" value="28"></label>
+          <label class="sl" for="soft">Soften <input id="soft" type="range" min="0" max="60" value="18"></label>
+        </div>
+        <p class="note">The comp mask is not sent. It is the sketch's coverage, grown and softened, used to put the original plate back everywhere outside the edit, because GPT masks are only guidance.</p>
+        <div class="row" style="justify-content:space-between"><h2>Prompt</h2><button id="copyPrompt" type="button">Copy prompt</button></div>
+        <pre class="prompt" id="prompt"></pre>
+      </div>
+    </aside>
+  </main>
+</div>
+
+<nav class="switcher" aria-label="Prototype variants">
+  <button id="prevV" type="button" aria-label="Previous variant">◀</button>
+  <span id="vLabel"></span>
+  <button id="nextV" type="button" aria-label="Next variant">▶</button>
+</nav>
+
+<script>
+(() => {
+  const INTENTS = {
+    remove: { label: 'Remove', css: '--remove', word: 'red' },
+    add:    { label: 'Add',    css: '--add',    word: 'green' },
+    move:   { label: 'Move',   css: '--move',   word: 'blue' },
+    change: { label: 'Change', css: '--change', word: 'yellow' },
+  };
+  const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const colour = intent => cssVar(INTENTS[intent].css);
+
+  const VARIANTS = {
+    A: { name: 'Paint over', blurb: 'RotoPaint-style. One brush, the colour says what you want, the prompt says the rest.', tools: ['brush'] },
+    B: { name: 'Sketch kit', blurb: 'Purpose-built tools: brush, arrow, box and text label. The prompt is built from what you drew.', tools: ['brush', 'arrow', 'box', 'text'] },
+    C: { name: 'Regions', blurb: 'Draw boxes only. Each box becomes a numbered region with its own instruction.', tools: ['box'] },
+  };
+  const ORDER = ['A', 'B', 'C'];
+
+  // ---------- sample frame ----------
+  const frame = document.createElement('canvas');
+  function drawSampleFrame() {
+    frame.width = 1536; frame.height = 1024;
+    const g = frame.getContext('2d');
+    const sky = g.createLinearGradient(0, 0, 0, 620);
+    sky.addColorStop(0, '#6f8fb3'); sky.addColorStop(1, '#d9c9ad');
+    g.fillStyle = sky; g.fillRect(0, 0, 1536, 1024);
+    g.fillStyle = '#7d8a8f';
+    g.beginPath(); g.moveTo(0, 560); for (let x = 0; x <= 1536; x += 64) g.lineTo(x, 520 - 40 * Math.sin(x / 210) - 20 * Math.sin(x / 77)); g.lineTo(1536, 620); g.lineTo(0, 620); g.fill();
+    const bld = [[60, 250, 260, '#b9a58c'], [330, 180, 230, '#9f8a74'], [570, 300, 200, '#c7b59a'], [1080, 220, 280, '#a89482'], [1370, 160, 166, '#bfae95']];
+    for (const [x, top, w, c] of bld) {
+      g.fillStyle = c; g.fillRect(x, top, w, 700 - top);
+      g.fillStyle = 'rgba(40,48,58,.75)';
+      for (let y = top + 30; y < 640; y += 70) for (let wx = x + 22; wx < x + w - 40; wx += 56) g.fillRect(wx, y, 30, 42);
+    }
+    g.fillStyle = '#5b5550'; g.fillRect(0, 700, 1536, 324);
+    g.fillStyle = '#8b847a'; g.fillRect(0, 680, 1536, 30);
+    g.fillStyle = '#e8e1d2'; for (let x = 0; x < 1536; x += 160) g.fillRect(x, 860, 90, 10);
+    // car
+    g.fillStyle = '#9c2f2a'; g.beginPath(); g.roundRect(820, 720, 300, 90, 18); g.fill();
+    g.beginPath(); g.roundRect(880, 670, 170, 70, 22); g.fill();
+    g.fillStyle = 'rgba(30,40,50,.8)'; g.fillRect(900, 684, 60, 40); g.fillRect(970, 684, 62, 40);
+    g.fillStyle = '#111'; for (const cx of [880, 1060]) { g.beginPath(); g.arc(cx, 812, 30, 0, 7); g.fill(); }
+    // lamp post
+    g.fillStyle = '#2b2d30'; g.fillRect(470, 380, 12, 330); g.fillRect(450, 372, 60, 14);
+    g.fillStyle = '#f6e7a8'; g.fillRect(492, 386, 18, 10);
+    // tree
+    g.fillStyle = '#4b3a2a'; g.fillRect(1250, 520, 22, 190);
+    g.fillStyle = '#4f6b3f'; for (const [x, y, r] of [[1262, 470, 90], [1200, 520, 60], [1320, 520, 65]]) { g.beginPath(); g.arc(x, y, r, 0, 7); g.fill(); }
+    // grain
+    const d = g.getImageData(0, 0, 1536, 1024), p = d.data;
+    for (let i = 0; i < p.length; i += 4) { const n = (Math.random() - .5) * 14; p[i] += n; p[i + 1] += n; p[i + 2] += n; }
+    g.putImageData(d, 0, 0);
+  }
+  drawSampleFrame();
+  let frameName = 'sample street (generated)';
+
+  // ---------- state ----------
+  const examples = () => ({
+    A: [
+      { type: 'stroke', intent: 'remove', size: 26, pts: zig(830, 690, 1110, 820) },
+      { type: 'stroke', intent: 'add', size: 22, pts: loop(250, 170, 120, 60) },
+    ],
+    B: [
+      { type: 'box', intent: 'remove', size: 8, x0: 805, y0: 655, x1: 1135, y1: 850 },
+      { type: 'arrow', intent: 'move', size: 10, x0: 476, y0: 560, x1: 700, y1: 560 },
+      { type: 'box', intent: 'add', size: 8, x0: 1090, y0: 300, x1: 1340, y1: 380 },
+      { type: 'text', intent: 'add', size: 8, x: 1090, y: 288, text: 'iron balcony' },
+      { type: 'stroke', intent: 'change', size: 18, pts: loop(1262, 500, 110, 90) },
+      { type: 'text', intent: 'change', size: 8, x: 1170, y: 380, text: 'autumn leaves' },
+    ],
+    C: [
+      { type: 'box', intent: 'remove', size: 8, x0: 805, y0: 655, x1: 1135, y1: 850, note: 'the red car, show empty road' },
+      { type: 'box', intent: 'add', size: 8, x0: 600, y0: 120, x1: 1000, y1: 300, note: 'a hot air balloon, small, far away' },
+      { type: 'box', intent: 'change', size: 8, x0: 1150, y0: 370, x1: 1400, y1: 600, note: 'tree in autumn colours' },
+    ],
+  });
+  function zig(x0, y0, x1, y1) { const p = []; for (let i = 0; i <= 14; i++) { const t = i / 14; p.push([x0 + (x1 - x0) * t, i % 2 ? y0 : y1]); } return p; }
+  function loop(cx, cy, rx, ry) { const p = []; for (let a = 0; a <= 6.4; a += .2) p.push([cx + rx * Math.cos(a), cy + ry * Math.sin(a)]); return p; }
+
+  let shapes = examples();
+  const notes = { A: 'Keep the lighting and film grain. Late afternoon.', B: 'Keep the lighting and film grain.', C: '' };
+  let variant = ORDER.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'A';
+  let tool = 'brush', intent = 'remove', size = 22;
+  let draft = null;
+
+  // ---------- drawing ----------
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+
+  function drawArrow(g, s, w) {
+    const ang = Math.atan2(s.y1 - s.y0, s.x1 - s.x0), h = 18 + w * 2.2;
+    g.beginPath(); g.moveTo(s.x0, s.y0); g.lineTo(s.x1 - Math.cos(ang) * h * .6, s.y1 - Math.sin(ang) * h * .6); g.stroke();
+    g.beginPath(); g.moveTo(s.x1, s.y1);
+    g.lineTo(s.x1 - h * Math.cos(ang - .45), s.y1 - h * Math.sin(ang - .45));
+    g.lineTo(s.x1 - h * Math.cos(ang + .45), s.y1 - h * Math.sin(ang + .45));
+    g.closePath(); g.fill();
+  }
+  function drawShape(g, s, idx) {
+    const c = colour(s.intent);
+    g.save(); g.strokeStyle = c; g.fillStyle = c; g.lineCap = 'round'; g.lineJoin = 'round'; g.lineWidth = s.size;
+    if (s.type === 'stroke') {
+      g.globalAlpha = .88; g.beginPath(); s.pts.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); g.stroke();
+    } else if (s.type === 'arrow') {
+      drawArrow(g, s, s.size);
+    } else if (s.type === 'box') {
+      const x = Math.min(s.x0, s.x1), y = Math.min(s.y0, s.y1), w = Math.abs(s.x1 - s.x0), h = Math.abs(s.y1 - s.y0);
+      g.strokeRect(x, y, w, h);
+      if (idx != null) {
+        g.fillRect(x - s.size / 2, y - 44, 44, 44);
+        g.fillStyle = '#111'; g.font = '600 30px "IBM Plex Mono", monospace'; g.textAlign = 'center'; g.textBaseline = 'middle';
+        g.fillText(String(idx + 1), x - s.size / 2 + 22, y - 21);
+      }
+    } else if (s.type === 'text') {
+      g.font = '600 38px "IBM Plex Sans Condensed", sans-serif'; g.textBaseline = 'bottom';
+      g.lineWidth = 6; g.strokeStyle = 'rgba(0,0,0,.75)'; g.strokeText(s.text, s.x, s.y); g.fillText(s.text, s.x, s.y);
+    }
+    g.restore();
+  }
+  function drawSketch(g) {
+    const list = shapes[variant];
+    list.forEach((s, i) => drawShape(g, s, variant === 'C' ? i : null));
+    if (draft) drawShape(g, draft, variant === 'C' ? list.length : null);
+  }
+  function maskOf(target) {
+    const grow = +document.getElementById('grow').value, soft = +document.getElementById('soft').value;
+    const m = document.createElement('canvas'); m.width = frame.width; m.height = frame.height;
+    const g = m.getContext('2d');
+    g.fillStyle = '#000'; g.fillRect(0, 0, m.width, m.height);
+    g.strokeStyle = g.fillStyle = '#fff'; g.lineCap = 'round'; g.lineJoin = 'round';
+    for (const s of shapes[variant]) {
+      if (s.type === 'stroke') { g.lineWidth = s.size + grow * 2; g.beginPath(); s.pts.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); g.stroke(); }
+      else if (s.type === 'box') { const x = Math.min(s.x0, s.x1), y = Math.min(s.y0, s.y1); g.fillRect(x - grow, y - grow, Math.abs(s.x1 - s.x0) + grow * 2, Math.abs(s.y1 - s.y0) + grow * 2); }
+      else if (s.type === 'arrow') { g.lineWidth = s.size + grow * 4; g.beginPath(); g.moveTo(s.x0, s.y0); g.lineTo(s.x1, s.y1); g.stroke(); }
+    }
+    const tg = target.getContext('2d');
+    tg.save(); tg.filter = soft ? `blur(${soft}px)` : 'none';
+    tg.drawImage(m, 0, 0, target.width, target.height); tg.restore();
+  }
+
+  let raf = 0;
+  function render() { cancelAnimationFrame(raf); raf = requestAnimationFrame(paint); }
+  function paint() {
+    cv.width = frame.width; cv.height = frame.height;
+    ctx.drawImage(frame, 0, 0); drawSketch(ctx);
+    const tw = 320, th = Math.round(320 * frame.height / frame.width);
+    for (const id of ['t1', 't2', 't3']) { const t = document.getElementById(id); t.width = tw; t.height = th; }
+    document.getElementById('t1').getContext('2d').drawImage(frame, 0, 0, tw, th);
+    const t2 = document.getElementById('t2').getContext('2d'); t2.drawImage(cv, 0, 0, tw, th);
+    const full = document.createElement('canvas'); full.width = frame.width; full.height = frame.height; maskOf(full);
+    document.getElementById('t3').getContext('2d').drawImage(full, 0, 0, tw, th);
+    document.getElementById('frameInfo').textContent = `${frame.width} × ${frame.height} · ${frameName}`;
+    const n = shapes[variant].length;
+    document.getElementById('shapeInfo').textContent = `${n} mark${n === 1 ? '' : 's'}`;
+    document.getElementById('prompt').textContent = buildPrompt();
+    if (variant === 'C') syncRegionList();
+  }
+
+  // ---------- prompt ----------
+  function legendLine(list) {
+    const used = [...new Set(list.map(s => s.intent))];
+    const parts = { remove: 'red marks show what to remove', add: 'green marks show where to add something', move: 'blue arrows mean move the thing at the tail to the arrowhead', change: 'yellow marks show what to change' };
+    return used.length ? 'In image 2, ' + used.map(u => parts[u]).join('; ') + '.' : '';
+  }
+  const HEAD = 'Image 1 is the frame to edit. Image 2 is the same frame with my sketch drawn over it.';
+  const TAIL = 'Return a clean photographic version of image 1 with only these edits. Do not draw any of the sketch marks, labels or numbers. Keep everything else, including lighting, colour and grain, unchanged.';
+  function buildPrompt() {
+    const list = shapes[variant], lines = [HEAD];
+    if (variant === 'A') {
+      lines.push(legendLine(list));
+    } else if (variant === 'B') {
+      lines.push(legendLine(list));
+      const labels = list.filter(s => s.type === 'text');
+      if (labels.length) lines.push('Labels written on the sketch: ' + labels.map(l => `"${l.text}" (${INTENTS[l.intent].word})`).join(', ') + '. Each label describes the nearest mark of the same colour.');
+    } else {
+      lines.push('Image 2 has numbered boxes. Apply each instruction inside its box:');
+      list.forEach((s, i) => lines.push(`${i + 1}. ${INTENTS[s.intent].label}: ${s.note?.trim() || '(no instruction yet)'}`));
+    }
+    if (notes[variant].trim()) lines.push(notes[variant].trim());
+    lines.push(TAIL);
+    return lines.filter(Boolean).join('\n\n');
+  }
+
+  // ---------- UI per variant ----------
+  const ICONS = {
+    brush: '<path d="M4 20c3 0 5-2 5-4.5S7 12 5 13s-1 7-1 7z"/><path d="M9 15 20 4"/>',
+    arrow: '<path d="M4 20 20 4M11 4h9v9"/>',
+    box: '<rect x="4" y="5" width="16" height="14"/>',
+    text: '<path d="M5 6V4h14v2M12 4v16M9 20h6"/>',
+  };
+  function chipsHTML() {
+    return Object.entries(INTENTS).map(([k, v]) => `<button type="button" class="chip" data-intent="${k}" aria-pressed="${k === intent}"><i style="background:var(${v.css})"></i>${v.label}</button>`).join('');
+  }
+  function buildUI() {
+    const v = VARIANTS[variant];
+    document.getElementById('variantBlurb').textContent = v.blurb;
+    document.getElementById('vLabel').textContent = `${variant} · ${v.name}`;
+    if (!v.tools.includes(tool)) tool = v.tools[0];
+    if (variant === 'C' && intent === 'move') intent = 'remove';
+
+    const rail = document.getElementById('rail');
+    rail.hidden = v.tools.length < 2;
+    rail.innerHTML = v.tools.map(t => `<button type="button" class="tool" data-tool="${t}" aria-pressed="${t === tool}" aria-label="${t}" title="${t}"><svg viewBox="0 0 24 24">${ICONS[t]}</svg></button>`).join('');
+
+    const vbar = document.getElementById('vbar');
+    vbar.innerHTML = `<div class="chips">${chipsHTML()}</div>` +
+      (variant === 'C' ? '' : `<label class="sl" for="size">Size <input id="size" type="range" min="4" max="60" value="${size}"></label>`) +
+      `<span class="spacer"></span><button type="button" id="undo">Undo</button><button type="button" id="clear">Clear</button>` +
+      `<span class="btn file">Load frame<input id="load" type="file" accept="image/*" aria-label="Load your own frame"></span>`;
+    if (variant === 'C') vbar.querySelector('[data-intent=move]').remove();
+
+    const controls = document.getElementById('controls');
+    if (variant === 'A') {
+      controls.innerHTML = `<h2>Prompt knob</h2><p>Paint over the plate. Colour carries intent. Say anything the colours can't in the box below.</p><textarea id="noteA" aria-label="Extra prompt text">${esc(notes.A)}</textarea>`;
+    } else if (variant === 'B') {
+      controls.innerHTML = `<h2>Extra instructions</h2><p>Use the text tool to label marks on the frame. Labels go into the prompt in the colour you wrote them in.</p><textarea id="noteB" aria-label="Extra prompt text">${esc(notes.B)}</textarea>`;
+    } else {
+      controls.innerHTML = `<h2>Regions</h2><div class="regions" id="regions"></div><h2>Overall</h2><textarea id="noteC" aria-label="Overall instruction" placeholder="Anything that applies to the whole frame">${esc(notes.C)}</textarea>`;
+      regionSig = '';
+    }
+    const ta = controls.querySelector('textarea');
+    ta.addEventListener('input', () => { notes[variant] = ta.value; document.getElementById('prompt').textContent = buildPrompt(); });
+    render();
+  }
+  function esc(s) { return s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+  let regionSig = '';
+  function syncRegionList() {
+    const list = shapes.C, box = document.getElementById('regions');
+    if (!box) return;
+    const sig = list.length + ':' + list.map(s => s.intent).join(',');
+    if (sig === regionSig) return; regionSig = sig;
+    if (!list.length) { box.innerHTML = '<p class="empty">Drag a box on the frame to add region 1.</p>'; return; }
+    box.innerHTML = list.map((s, i) => `<div class="region" style="--c:var(${INTENTS[s.intent].css})"><b>${i + 1}</b><div class="f">
+      <select id="rint${i}" data-i="${i}" aria-label="Region ${i + 1} intent">${['remove', 'add', 'change'].map(k => `<option value="${k}" ${k === s.intent ? 'selected' : ''}>${INTENTS[k].label}</option>`).join('')}</select>
+      <input id="rnote${i}" data-i="${i}" type="text" value="${esc(s.note || '')}" placeholder="What should happen here?" aria-label="Region ${i + 1} instruction"></div></div>`).join('');
+    box.querySelectorAll('select').forEach(el => el.addEventListener('change', () => { shapes.C[+el.dataset.i].intent = el.value; render(); }));
+    box.querySelectorAll('input').forEach(el => el.addEventListener('input', () => { shapes.C[+el.dataset.i].note = el.value; document.getElementById('prompt').textContent = buildPrompt(); }));
+  }
+
+  // ---------- events ----------
+  document.addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.intent) { intent = b.dataset.intent; document.querySelectorAll('[data-intent]').forEach(x => x.setAttribute('aria-pressed', x === b)); }
+    if (b.dataset.tool) { tool = b.dataset.tool; document.querySelectorAll('[data-tool]').forEach(x => x.setAttribute('aria-pressed', x === b)); }
+    if (b.id === 'undo') { shapes[variant].pop(); render(); }
+    if (b.id === 'clear') { shapes[variant] = []; render(); }
+  });
+  document.addEventListener('input', e => {
+    if (e.target.id === 'size') size = +e.target.value;
+    if (e.target.id === 'grow' || e.target.id === 'soft') render();
+  });
+  document.addEventListener('change', e => {
+    if (e.target.id !== 'load' || !e.target.files[0]) return;
+    const img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, 2048 / Math.max(img.width, img.height));
+      frame.width = Math.round(img.width * k); frame.height = Math.round(img.height * k);
+      frame.getContext('2d').drawImage(img, 0, 0, frame.width, frame.height);
+      frameName = e.target.files[0].name; shapes = { A: [], B: [], C: [] }; render();
+    };
+    img.src = URL.createObjectURL(e.target.files[0]);
+  });
+
+  function pos(e) { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height]; }
+  cv.addEventListener('pointerdown', e => {
+    const [x, y] = pos(e);
+    if (tool === 'text') { openText(e, x, y); return; }
+    cv.setPointerCapture(e.pointerId);
+    const sz = variant === 'C' ? 8 : (tool === 'box' || tool === 'arrow') ? Math.max(6, size / 2.5) : size;
+    draft = tool === 'brush' ? { type: 'stroke', intent, size: sz, pts: [[x, y]] }
+      : { type: tool, intent: tool === 'arrow' && variant === 'B' ? intent : intent, size: sz, x0: x, y0: y, x1: x, y1: y, note: '' };
+    render();
+  });
+  cv.addEventListener('pointermove', e => {
+    if (!draft) return; const [x, y] = pos(e);
+    if (draft.type === 'stroke') draft.pts.push([x, y]); else { draft.x1 = x; draft.y1 = y; }
+    render();
+  });
+  const finish = () => {
+    if (!draft) return;
+    const big = draft.type === 'stroke' ? draft.pts.length > 2 : Math.hypot(draft.x1 - draft.x0, draft.y1 - draft.y0) > 12;
+    if (big) shapes[variant].push(draft);
+    const added = big && variant === 'C';
+    draft = null; render();
+    if (added) setTimeout(() => document.getElementById('rnote' + (shapes.C.length - 1))?.focus(), 50);
+  };
+  cv.addEventListener('pointerup', finish); cv.addEventListener('pointercancel', finish);
+
+  const ti = document.getElementById('textInput');
+  let textAt = null;
+  function openText(e, x, y) {
+    const sr = document.getElementById('stage').getBoundingClientRect();
+    textAt = [x, y]; ti.value = ''; ti.hidden = false;
+    ti.style.left = Math.min(e.clientX - sr.left, sr.width - 190) + 'px'; ti.style.top = (e.clientY - sr.top - 34) + 'px';
+    setTimeout(() => ti.focus(), 0);
+  }
+  ti.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && ti.value.trim()) { shapes[variant].push({ type: 'text', intent, size: 8, x: textAt[0], y: textAt[1], text: ti.value.trim() }); ti.hidden = true; render(); }
+    if (e.key === 'Escape') ti.hidden = true;
+  });
+  ti.addEventListener('blur', () => { ti.hidden = true; });
+
+  document.getElementById('copyPrompt').addEventListener('click', async () => {
+    const b = document.getElementById('copyPrompt');
+    try { await navigator.clipboard.writeText(buildPrompt()); b.textContent = 'Copied'; }
+    catch { const r = document.createRange(); r.selectNodeContents(document.getElementById('prompt')); const s = getSelection(); s.removeAllRanges(); s.addRange(r); b.textContent = 'Selected'; }
+    setTimeout(() => b.textContent = 'Copy prompt', 1500);
+  });
+
+  function go(d) { variant = ORDER[(ORDER.indexOf(variant) + d + ORDER.length) % ORDER.length]; history.replaceState(null, '', '#' + variant); buildUI(); }
+  document.getElementById('prevV').addEventListener('click', () => go(-1));
+  document.getElementById('nextV').addEventListener('click', () => go(1));
+  document.addEventListener('keydown', e => {
+    if (e.target.closest('input, textarea, select, [contenteditable]')) return;
+    if (e.key === 'ArrowLeft') go(-1); if (e.key === 'ArrowRight') go(1);
+    if ((e.ctrlKey || e.metaKey) && e.key === 'z') { shapes[variant].pop(); render(); }
+  });
+  window.addEventListener('hashchange', () => { const h = location.hash.slice(1); if (ORDER.includes(h) && h !== variant) { variant = h; buildUI(); } });
+
+  buildUI();
+  document.fonts?.ready.then(render);
+})();
+</script>
